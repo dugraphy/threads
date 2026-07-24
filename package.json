@@ -1,0 +1,24 @@
+{
+  "name": "threads",
+  "version": "1.0.0",
+  "description": "",
+  "main": "ecosystem.config.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dugraphy/threads.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dugraphy/threads/issues"
+  },
+  "homepage": "https://github.com/dugraphy/threads#readme",
+  "dependencies": {
+    "dotenv": "^17.4.2"
+  }
+}
