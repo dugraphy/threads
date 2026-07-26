@@ -1,5 +1,5 @@
 STATUS: 대기
-DATE: 2026-07-26
+DATE: 2026-07-27
 CATEGORY: 웹제작 실무팁
 IMAGE: 
 ---
