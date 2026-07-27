@@ -151,7 +151,7 @@ async function main() {
 
   // 7. 댓글이 있으면 원글에 이어서 발행
   if (comment) {
-    await new Promise(resolve => setTimeout(resolve, 10000));
+    await new Promise(resolve => setTimeout(resolve, 30000));
     const commentResult = await createAndPublish(comment, mainResult.id);
     if (commentResult.success) {
       console.log(`댓글 발행 성공! 댓글 ID: ${commentResult.id}`);
