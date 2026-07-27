@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { execSync, spawn } = require('child_process');
+const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
@@ -9,6 +9,7 @@ const POSTS_DIR = path.join(REPO_PATH, 'content', 'posts');
 const SCRIPT_PATH = path.join(REPO_PATH, 'post.js');
 const TOKEN = process.env.THREADS_ACCESS_TOKEN;
 const USER_ID = process.env.THREADS_USER_ID;
+const PM2_PROCESS_NAME = '스레드자동발행'; // pm2로 등록한 프로세스 이름과 반드시 일치해야 함
 
 function httpsPost(url) {
   return new Promise((resolve, reject) => {
@@ -23,6 +24,22 @@ function httpsPost(url) {
         }
       });
     }).on('error', reject).end();
+  });
+}
+
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(new Error('응답 파싱 실패: ' + data));
+        }
+      });
+    }).on('error', reject);
   });
 }
 
@@ -77,6 +94,27 @@ async function createAndPublish(text, replyToId = null) {
   return { success: true, id: publishRes.id };
 }
 
+// 원글이 실제로 조회 가능한 상태가 될 때까지 확인 후 재시도
+// (색인 지연으로 인한 "미디어를 찾을 수 없음" 에러 방지)
+async function waitUntilAvailable(threadId, maxRetries = 6, intervalMs = 5000) {
+  const checkUrl = `https://graph.threads.net/v1.0/${threadId}?fields=id&access_token=${TOKEN}`;
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const res = await httpsGet(checkUrl);
+      if (res.id === threadId) {
+        console.log(`원글 조회 확인 완료 (시도 ${i + 1}/${maxRetries})`);
+        return true;
+      }
+    } catch (e) {
+      // 조회 실패하면 아래에서 대기 후 재시도
+    }
+    console.log(`원글이 아직 조회되지 않음. ${intervalMs / 1000}초 후 재시도 (${i + 1}/${maxRetries})`);
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
+}
+
 async function main() {
   console.log(`[${new Date().toISOString()}] 발행 스크립트 시작`);
 
@@ -95,13 +133,15 @@ async function main() {
   const afterHash = fs.readFileSync(SCRIPT_PATH, 'utf-8');
 
   if (beforeHash !== afterHash) {
-    console.log('post.js가 업데이트되었습니다. 새 버전으로 재실행합니다.');
-    const child = spawn('node', [SCRIPT_PATH], {
-      cwd: REPO_PATH,
-      stdio: 'inherit',
-      detached: true,
-    });
-    child.unref();
+    console.log('post.js가 업데이트되었습니다. pm2를 통해 안전하게 재시작합니다.');
+    try {
+      // spawn/detached 대신 pm2 restart 사용:
+      // - 기존 프로세스가 완전히 종료된 후 새 버전이 시작되므로
+      //   같은 파일을 두 프로세스가 동시에 처리하는 문제(중복 발행/댓글 ID 뒤섞임)를 방지함
+      execSync(`pm2 restart ${PM2_PROCESS_NAME}`, { stdio: 'inherit' });
+    } catch (e) {
+      console.error('pm2 restart 실패:', e.message);
+    }
     return; // 지금(구버전) 실행은 여기서 조용히 종료, 발행 시도 안 함
   }
 
@@ -150,19 +190,28 @@ async function main() {
   console.log(`원글 발행 성공! 스레드 ID: ${mainResult.id}`);
 
   // 7. 댓글이 있으면 원글에 이어서 발행
+  //    -> 원글이 실제로 조회 가능한 상태가 될 때까지 확인 후 시도 (색인 지연 대응)
+  let commentStatusNote = '';
   if (comment) {
-    await new Promise(resolve => setTimeout(resolve, 30000));
-    const commentResult = await createAndPublish(comment, mainResult.id);
-    if (commentResult.success) {
-      console.log(`댓글 발행 성공! 댓글 ID: ${commentResult.id}`);
+    const isAvailable = await waitUntilAvailable(mainResult.id);
+
+    if (!isAvailable) {
+      console.error('원글 조회 확인 실패 (시간 초과). 댓글 발행을 시도하지 않습니다.');
+      commentStatusNote = ' (댓글 대기 시간 초과, 수동으로 추가 필요)';
     } else {
-      console.error('댓글 발행 실패:', JSON.stringify(commentResult.error));
-      console.log('원글은 발행됐지만 댓글은 실패했습니다. STATUS는 발행완료로 처리하고, 댓글은 수동으로 다시 달아주세요.');
+      const commentResult = await createAndPublish(comment, mainResult.id);
+      if (commentResult.success) {
+        console.log(`댓글 발행 성공! 댓글 ID: ${commentResult.id}`);
+      } else {
+        console.error('댓글 발행 실패:', JSON.stringify(commentResult.error));
+        console.log('원글은 발행됐지만 댓글은 실패했습니다. STATUS는 발행완료로 처리하고, 댓글은 수동으로 다시 달아주세요.');
+        commentStatusNote = ' (댓글 실패, 수동으로 추가 필요)';
+      }
     }
   }
 
   // 8. STATUS 변경 (원글 성공 기준으로 발행완료 처리)
-  const updated = target.content.replace('STATUS: 대기', 'STATUS: 발행완료');
+  const updated = target.content.replace('STATUS: 대기', `STATUS: 발행완료${commentStatusNote}`);
   fs.writeFileSync(target.filePath, updated, 'utf-8');
 
   // 9. git commit & push
