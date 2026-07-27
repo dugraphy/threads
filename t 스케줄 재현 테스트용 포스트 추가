@@ -1,0 +1,158 @@
+[33mcommit 85cc45e677934c4f3e5ca6571f398a77fe64696b[m
+Author: dugraphy <91935120+dugraphy@users.noreply.github.com>
+Date:   Sun Jul 26 17:00:00 2026 +0900
+
+    Enhance post parsing and posting logic
+    
+    Refactor post handling to separate main body and comments, add character length check before posting, and improve error handling.
+
+[1mdiff --git a/post.js b/post.js[m
+[1mindex 628d2e4..d8b16af 100644[m
+[1m--- a/post.js[m
+[1m+++ b/post.js[m
+[36m@@ -9,7 +9,6 @@[m [mconst POSTS_DIR = path.join(REPO_PATH, 'content', 'posts');[m
+ const TOKEN = process.env.THREADS_ACCESS_TOKEN;[m
+ const USER_ID = process.env.THREADS_USER_ID;[m
+ [m
+[31m-// 간단한 HTTPS POST 요청 헬퍼[m
+ function httpsPost(url) {[m
+   return new Promise((resolve, reject) => {[m
+     https.request(url, { method: 'POST' }, (res) => {[m
+[36m@@ -26,10 +25,15 @@[m [mfunction httpsPost(url) {[m
+   });[m
+ }[m
+ [m
+[31m-// 파일 내용을 메타데이터 + 본문으로 분리[m
+[32m+[m[32m// 파일 내용을 메타데이터 + 본문(+ 댓글)으로 분리[m
+ function parsePost(content) {[m
+   const [metaRaw, ...bodyParts] = content.split('---');[m
+[31m-  const body = bodyParts.join('---').trim();[m
+[32m+[m[32m  const fullBody = bodyParts.join('---').trim();[m
+[32m+[m
+[32m+[m[32m  // ===COMMENT=== 기준으로 원글/댓글 분리[m
+[32m+[m[32m  const [mainBody, ...commentParts] = fullBody.split('===COMMENT===');[m
+[32m+[m[32m  const comment = commentParts.length > 0 ? commentParts.join('===COMMENT===').trim() : null;[m
+[32m+[m
+   const meta = {};[m
+   metaRaw.split('\n').forEach((line) => {[m
+     const idx = line.indexOf(':');[m
+[36m@@ -38,14 +42,25 @@[m [mfunction parsePost(content) {[m
+     const value = line.slice(idx + 1).trim();[m
+     if (key) meta[key] = value;[m
+   });[m
+[31m-  return { meta, body };[m
+[32m+[m
+[32m+[m[32m  return { meta, body: mainBody.trim(), comment };[m
+ }[m
+ [m
+[31m-async function postToThreads(text) {[m
+[32m+[m[32m// 글자수 체크 (500자 제한)[m
+[32m+[m[32mfunction checkLength(text, label) {[m
+[32m+[m[32m  if (text.length > 500) {[m
+[32m+[m[32m    throw new Error(`${label} 글자수 초과 (${text.length}자, 최대 500자)`);[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32masync function createAndPublish(text, replyToId = null) {[m
+   // 1단계: Container 생성[m
+[31m-  const createUrl = `https://graph.threads.net/v1.0/${USER_ID}/threads?media_type=TEXT&text=${encodeURIComponent(text)}&access_token=${TOKEN}`;[m
+[31m-  const createRes = await httpsPost(createUrl);[m
+[32m+[m[32m  let createUrl = `https://graph.threads.net/v1.0/${USER_ID}/threads?media_type=TEXT&text=${encodeURIComponent(text)}&access_token=${TOKEN}`;[m
+[32m+[m[32m  if (replyToId) {[m
+[32m+[m[32m    createUrl += `&reply_to_id=${replyToId}`;[m
+[32m+[m[32m  }[m
+ [m
+[32m+[m[32m  const createRes = await httpsPost(createUrl);[m
+   if (!createRes.id) {[m
+     return { success: false, error: createRes };[m
+   }[m
+[36m@@ -72,7 +87,7 @@[m [masync function main() {[m
+     return;[m
+   }[m
+ [m
+[31m-  // 2. 대기 중인 글 찾기 (파일명 순 = 날짜순)[m
+[32m+[m[32m  // 2. 대기 중인 글 찾기[m
+   const files = fs.readdirSync(POSTS_DIR).filter((f) => f.endsWith('.txt')).sort();[m
+ [m
+   let target = null;[m
+[36m@@ -93,31 +108,55 @@[m [masync function main() {[m
+   console.log(`발행 대상: ${target.file}`);[m
+ [m
+   // 3. 파싱[m
+[31m-  const { body } = parsePost(target.content);[m
+[31m-[m
+[31m-  // 4. 발행[m
+[31m-  const result = await postToThreads(body);[m
+[31m-[m
+[31m-  if (result.success) {[m
+[31m-    console.log(`발행 성공! 스레드 ID: ${result.id}`);[m
+[31m-[m
+[31m-    // 5. STATUS 변경[m
+[31m-    const updated = target.content.replace('STATUS: 대기', 'STATUS: 발행완료');[m
+[31m-    fs.writeFileSync(target.filePath, updated, 'utf-8');[m
+[31m-[m
+[31m-    // 6. git commit & push[m
+[31m-    try {[m
+[31m-      execSync(`git -C "${REPO_PATH}" add .`);[m
+[31m-      execSync(`git -C "${REPO_PATH}" commit -m "발행완료: ${target.file}"`);[m
+[31m-      execSync(`git -C "${REPO_PATH}" push origin main`, { stdio: 'inherit' });[m
+[31m-      console.log('GitHub에 반영 완료');[m
+[31m-    } catch (e) {[m
+[31m-      console.error('git commit/push 실패:', e.message);[m
+[31m-    }[m
+[31m-  } else {[m
+[31m-    console.error('발행 실패:', JSON.stringify(result.error));[m
+[32m+[m[32m  const { body, comment } = parsePost(target.content);[m
+[32m+[m
+[32m+[m[32m  // 4. 글자수 사전 체크 (발행 시도 전에 미리 확인)[m
+[32m+[m[32m  try {[m
+[32m+[m[32m    checkLength(body, '원글');[m
+[32m+[m[32m    if (comment) checkLength(comment, '댓글');[m
+[32m+[m[32m  } catch (e) {[m
+[32m+[m[32m    console.error('발행 취소:', e.message);[m
+[32m+[m[32m    console.log('STATUS는 "대기"로 유지됩니다. 파일을 수정한 후 다시 시도하세요.');[m
+[32m+[m[32m    return;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // 5. 원글 발행[m
+[32m+[m[32m  const mainResult = await createAndPublish(body);[m
+[32m+[m
+[32m+[m[32m  if (!mainResult.success) {[m
+[32m+[m[32m    console.error('원글 발행 실패:', JSON.stringify(mainResult.error));[m
+     console.log('STATUS는 "대기"로 유지됩니다. 다음 실행 때 재시도됩니다.');[m
+[32m+[m[32m    return;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  console.log(`원글 발행 성공! 스레드 ID: ${mainResult.id}`);[m
+[32m+[m
+[32m+[m[32m  // 6. 댓글이 있으면 원글에 이어서 발행[m
+[32m+[m[32m  let commentSuccess = true;[m
+[32m+[m[32m  if (comment) {[m
+[32m+[m[32m    const commentResult = await createAndPublish(comment, mainResult.id);[m
+[32m+[m[32m    if (commentResult.success) {[m
+[32m+[m[32m      console.log(`댓글 발행 성공! 댓글 ID: ${commentResult.id}`);[m
+[32m+[m[32m    } else {[m
+[32m+[m[32m      commentSuccess = false;[m
+[32m+[m[32m      console.error('댓글 발행 실패:', JSON.stringify(commentResult.error));[m
+[32m+[m[32m      console.log('원글은 발행됐지만 댓글은 실패했습니다. STATUS는 발행완료로 처리하고, 댓글은 수동으로 다시 달아주세요.');[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // 7. STATUS 변경 (원글 성공 기준으로 발행완료 처리)[m
+[32m+[m[32m  const updated = target.content.replace('STATUS: 대기', 'STATUS: 발행완료');[m
+[32m+[m[32m  fs.writeFileSync(target.filePath, updated, 'utf-8');[m
+[32m+[m
+[32m+[m[32m  // 8. git commit & push[m
+[32m+[m[32m  try {[m
+[32m+[m[32m    execSync(`git -C "${REPO_PATH}" add .`);[m
+[32m+[m[32m    execSync(`git -C "${REPO_PATH}" commit -m "발행완료: ${target.file}"`);[m
+[32m+[m[32m    execSync(`git -C "${REPO_PATH}" push origin main`, { stdio: 'inherit' });[m
+[32m+[m[32m    console.log('GitHub에 반영 완료');[m
+[32m+[m[32m  } catch (e) {[m
+[32m+[m[32m    console.error('git commit/push 실패:', e.message);[m
+   }[m
+ }[m
+ [m
+[31m-main();[m
+\ No newline at end of file[m
+[32m+[m[32mmain();[m
