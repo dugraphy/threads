@@ -1,11 +1,12 @@
 require('dotenv').config();
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
 const REPO_PATH = __dirname;
 const POSTS_DIR = path.join(REPO_PATH, 'content', 'posts');
+const SCRIPT_PATH = path.join(REPO_PATH, 'post.js');
 const TOKEN = process.env.THREADS_ACCESS_TOKEN;
 const USER_ID = process.env.THREADS_USER_ID;
 
@@ -79,7 +80,10 @@ async function createAndPublish(text, replyToId = null) {
 async function main() {
   console.log(`[${new Date().toISOString()}] 발행 스크립트 시작`);
 
-  // 1. 최신 콘텐츠 받아오기
+  // 0. 실행 시작 시점의 post.js 내용 기록 (나중에 변경 여부 비교용)
+  const beforeHash = fs.readFileSync(SCRIPT_PATH, 'utf-8');
+
+  // 1. 최신 콘텐츠/코드 받아오기
   try {
     execSync(`git -C "${REPO_PATH}" pull origin main`, { stdio: 'inherit' });
   } catch (e) {
@@ -87,7 +91,21 @@ async function main() {
     return;
   }
 
-  // 2. 대기 중인 글 찾기
+  // 2. pull 이후 post.js 자체가 바뀌었는지 확인
+  const afterHash = fs.readFileSync(SCRIPT_PATH, 'utf-8');
+
+  if (beforeHash !== afterHash) {
+    console.log('post.js가 업데이트되었습니다. 새 버전으로 재실행합니다.');
+    const child = spawn('node', [SCRIPT_PATH], {
+      cwd: REPO_PATH,
+      stdio: 'inherit',
+      detached: true,
+    });
+    child.unref();
+    return; // 지금(구버전) 실행은 여기서 조용히 종료, 발행 시도 안 함
+  }
+
+  // 3. 대기 중인 글 찾기 (파일명 순 = 날짜순)
   const files = fs.readdirSync(POSTS_DIR).filter((f) => f.endsWith('.txt')).sort();
 
   let target = null;
@@ -107,10 +125,10 @@ async function main() {
 
   console.log(`발행 대상: ${target.file}`);
 
-  // 3. 파싱
+  // 4. 파싱
   const { body, comment } = parsePost(target.content);
 
-  // 4. 글자수 사전 체크 (발행 시도 전에 미리 확인)
+  // 5. 글자수 사전 체크
   try {
     checkLength(body, '원글');
     if (comment) checkLength(comment, '댓글');
@@ -120,7 +138,7 @@ async function main() {
     return;
   }
 
-  // 5. 원글 발행
+  // 6. 원글 발행
   const mainResult = await createAndPublish(body);
 
   if (!mainResult.success) {
@@ -131,24 +149,22 @@ async function main() {
 
   console.log(`원글 발행 성공! 스레드 ID: ${mainResult.id}`);
 
-  // 6. 댓글이 있으면 원글에 이어서 발행
-  let commentSuccess = true;
+  // 7. 댓글이 있으면 원글에 이어서 발행
   if (comment) {
     const commentResult = await createAndPublish(comment, mainResult.id);
     if (commentResult.success) {
       console.log(`댓글 발행 성공! 댓글 ID: ${commentResult.id}`);
     } else {
-      commentSuccess = false;
       console.error('댓글 발행 실패:', JSON.stringify(commentResult.error));
       console.log('원글은 발행됐지만 댓글은 실패했습니다. STATUS는 발행완료로 처리하고, 댓글은 수동으로 다시 달아주세요.');
     }
   }
 
-  // 7. STATUS 변경 (원글 성공 기준으로 발행완료 처리)
+  // 8. STATUS 변경 (원글 성공 기준으로 발행완료 처리)
   const updated = target.content.replace('STATUS: 대기', 'STATUS: 발행완료');
   fs.writeFileSync(target.filePath, updated, 'utf-8');
 
-  // 8. git commit & push
+  // 9. git commit & push
   try {
     execSync(`git -C "${REPO_PATH}" add .`);
     execSync(`git -C "${REPO_PATH}" commit -m "발행완료: ${target.file}"`);
