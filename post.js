@@ -87,7 +87,7 @@ async function createAndPublish(text, replyToId = null) {
   return { success: true, id: publishRes.id };
 }
 
-// 이미지 + 텍스트 발행
+// 이미지 + 텍스트 발행 (원글, 댓글 공통으로 사용 — replyToId 유무만 다름)
 async function createAndPublishWithImage(text, imageUrl, replyToId = null) {
   let createUrl = `https://graph.threads.net/v1.0/${USER_ID}/threads?media_type=IMAGE&image_url=${encodeURIComponent(imageUrl)}&text=${encodeURIComponent(text)}&access_token=${TOKEN}`;
   if (replyToId) {
@@ -167,8 +167,10 @@ async function main() {
     return;
   }
 
-  // IMAGE 필드 확인
+  // IMAGE 필드 확인 (원글용)
   const imageUrl = meta.IMAGE && meta.IMAGE.trim() ? toImageUrl(meta.IMAGE.trim()) : null;
+  // COMMENT_IMAGE 필드 확인 (댓글용) — 형식: COMMENT_IMAGE: images/xxx.jpg
+  const commentImageUrl = meta.COMMENT_IMAGE && meta.COMMENT_IMAGE.trim() ? toImageUrl(meta.COMMENT_IMAGE.trim()) : null;
 
   let mainResult;
   if (imageUrl) {
@@ -187,7 +189,14 @@ async function main() {
   console.log(`원글 발행 성공! 스레드 ID: ${mainResult.id}`);
 
   if (comment) {
-    const commentResult = await createAndPublish(comment, mainResult.id);
+    let commentResult;
+    if (commentImageUrl) {
+      console.log(`댓글에 이미지 포함 발행: ${commentImageUrl}`);
+      commentResult = await createAndPublishWithImage(comment, commentImageUrl, mainResult.id);
+    } else {
+      commentResult = await createAndPublish(comment, mainResult.id);
+    }
+
     if (commentResult.success) {
       console.log(`댓글 발행 성공! 댓글 ID: ${commentResult.id}`);
     } else {
