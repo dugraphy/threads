@@ -1,4 +1,4 @@
-STATUS: 대기
+STATUS: 발행완료
 DATE: 2026-08-04
 CATEGORY: 웹제작 실무팁
 IMAGE: images/contact-before.jpg
